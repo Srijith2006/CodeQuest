@@ -3,6 +3,11 @@ import crypto from "crypto";
 import user from "../models/auth.js";
 import question from "../models/question.js";
 import nodemailer from "nodemailer";
+import dns from "dns";
+
+// Force Node's DNS resolver to prefer IPv4 globally — Render's network has a
+// broken/unreachable IPv6 route to Gmail's SMTP servers.
+dns.setDefaultResultOrder("ipv4first");
 
 // ── Plan config ───────────────────────────────────────────────────────────────
 export const PLANS = {
@@ -32,9 +37,11 @@ function isPaymentWindowOpen() {
 async function sendInvoiceEmail(toEmail, userName, plan, orderId, paymentId) {
   const transporter = nodemailer.createTransport({
     host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    family: 4, // forces IPv4, avoids the broken IPv6 route on Render
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    family: 4,
+    connectionTimeout: 10000,
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
   });
 

@@ -3,6 +3,11 @@ import user from "../models/auth.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
+import dns from "dns";
+
+// Force Node's DNS resolver to prefer IPv4 globally — Render's network has a
+// broken/unreachable IPv6 route to Gmail's SMTP servers.
+dns.setDefaultResultOrder("ipv4first");
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -33,9 +38,11 @@ function parseUserAgent(ua = "") {
 async function sendOTPEmail(toEmail, otp) {
   const transporter = nodemailer.createTransport({
     host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    family: 4, // forces IPv4, avoids the broken IPv6 route on Render
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    family: 4,
+    connectionTimeout: 10000,
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
   });
   await transporter.sendMail({

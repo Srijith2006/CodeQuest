@@ -1,6 +1,13 @@
 import user from "../models/auth.js";
 import bcrypt from "bcryptjs";
 import nodemailer from "nodemailer";
+import dns from "dns";
+
+// ── Force Node's DNS resolver to prefer IPv4 globally ─────────────────────────
+// Render's network has a broken/unreachable IPv6 route to Gmail's SMTP
+// servers. Passing `family: 4` to the socket options alone isn't enough on
+// some Render instances, so we also force this at the DNS resolution layer.
+dns.setDefaultResultOrder("ipv4first");
 
 // ── Generate a random password using ONLY uppercase + lowercase letters ──────
 // Spec requirement: "must contain only uppercase and lowercase letters,
@@ -39,9 +46,11 @@ function usedToday(dateField) {
 async function sendPasswordEmail(toEmail, userName, newPassword) {
   const transporter = nodemailer.createTransport({
     host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    family: 4, // forces IPv4, avoids the broken IPv6 route on Render
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    family: 4, // forces IPv4 at the socket layer
+    connectionTimeout: 10000,
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
@@ -156,8 +165,6 @@ export const forgotPassword = async (req, res) => {
     // ── Phone-based reset ────────────────────────────────────────────────
     // SMS gateway not integrated yet. Do NOT reveal the password in the
     // response — integrate Twilio/MSG91 here to actually deliver it via SMS.
-    // For now we keep the password change but inform the user the SMS
-    // channel isn't wired up, rather than leaking the credential.
     return res.status(501).json({
       message:
         "Phone-based password reset is not yet available. Please use the email option instead.",
