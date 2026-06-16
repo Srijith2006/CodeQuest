@@ -11,7 +11,14 @@ let transporter;
 function getTransporter() {
   if (!transporter) {
     transporter = nodemailer.createTransport({
-      service: "gmail",
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      // FIX: explicitly force the socket to use IPv4. Render's network
+      // has no usable IPv6 route to Gmail, causing ENETUNREACH errors.
+      // dns.setDefaultResultOrder alone isn't always enough to prevent
+      // Node from attempting an IPv6 connection, so we force it here too.
+      family: 4,
       auth: {
         user: process.env.EMAIL_USER, // your Gmail address
         pass: process.env.EMAIL_PASS, // 16-character Gmail App Password (NOT your normal password)
