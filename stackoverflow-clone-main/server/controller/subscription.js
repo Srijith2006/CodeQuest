@@ -1,13 +1,8 @@
 import Razorpay from "razorpay";
 import crypto from "crypto";
-import { Resend } from "resend";
+import { sendEmail } from "../utils/sendEmail.js";
 import user from "../models/auth.js";
 import question from "../models/question.js";
-
-// ── Resend helper ─────────────────────────────────────────────────────────────
-function getResend() {
-  return new Resend(process.env.RESEND_API_KEY);
-}
 
 // ── Plan config ───────────────────────────────────────────────────────────────
 export const PLANS = {
@@ -34,17 +29,16 @@ function isPaymentWindowOpen() {
   return totalMin >= 600 && totalMin < 660;
 }
 
-// ── Send invoice email via Resend ─────────────────────────────────────────────
+// ── Send invoice email via Gmail SMTP ─────────────────────────────────────────
 async function sendInvoiceEmail(toEmail, userName, plan, orderId, paymentId) {
-  const resend = getResend();
   const planInfo = PLANS[plan];
   const amount = (planInfo.price / 100).toFixed(2);
   const date = new Date().toLocaleDateString("en-IN", {
     day: "2-digit", month: "long", year: "numeric",
   });
 
-  const { error } = await resend.emails.send({
-    from: "Code-Quest <onboarding@resend.dev>",
+  // FIX: now uses Gmail SMTP — works for any recipient, not just your own address
+  await sendEmail({
     to: toEmail,
     subject: `Invoice - ${planInfo.label} Plan Subscription`,
     html: `
@@ -89,8 +83,6 @@ async function sendInvoiceEmail(toEmail, userName, plan, orderId, paymentId) {
       </div>
     `,
   });
-
-  if (error) throw new Error(error.message || "Resend failed to send invoice email");
 }
 
 // ── POST /subscription/create-order ──────────────────────────────────────────

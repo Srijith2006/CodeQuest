@@ -1,11 +1,5 @@
-import { Resend } from "resend";
 import user from "../models/auth.js";
-import nodemailer from "nodemailer";
-import dns from "dns";
-
-// Force Node's DNS resolver to prefer IPv4 globally — Render's network has a
-// broken/unreachable IPv6 route to Gmail's SMTP servers.
-dns.setDefaultResultOrder("ipv4first");
+import { sendEmail } from "../utils/sendEmail.js";
 
 const SUPPORTED_LANGUAGES = ["en", "es", "hi", "pt", "zh", "fr"];
 
@@ -13,16 +7,10 @@ function generateOTP() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
-function getResend() {
-  return new Resend(process.env.RESEND_API_KEY);
-}
-
-// ── Send OTP via Resend email ─────────────────────────────────────────────────
+// ── Send OTP via Gmail SMTP ────────────────────────────────────────────────
 async function sendEmailOTP(toEmail, otp, language, userName) {
-  const resend = getResend();
-
-  const { error } = await resend.emails.send({
-    from: "Code-Quest <onboarding@resend.dev>",
+  // FIX: now uses Gmail SMTP — works for any recipient, not just your own address
+  await sendEmail({
     to: toEmail,
     subject: "Language Change OTP - Code-Quest",
     html: `
@@ -53,8 +41,6 @@ async function sendEmailOTP(toEmail, otp, language, userName) {
       </div>
     `,
   });
-
-  if (error) throw new Error(error.message || "Resend failed to send OTP email");
 }
 
 // ── SMS via Twilio (only if configured, with graceful fallback) ───────────────
@@ -82,7 +68,7 @@ async function sendSMSOTP(toPhone, otp) {
 }
 
 // ── POST /language/request-otp  (auth required) ──────────────────────────────
-// French  → OTP sent to registered EMAIL (via Resend)
+// French  → OTP sent to registered EMAIL (via Gmail SMTP)
 // Others  → OTP sent via SMS (Twilio). Falls back to email if Twilio not set up.
 export const requestLanguageOTP = async (req, res) => {
   const { language } = req.body;
@@ -118,7 +104,7 @@ export const requestLanguageOTP = async (req, res) => {
       } catch (err) {
         console.error("French email OTP error:", err.message);
         return res.status(500).json({
-          message: "Failed to send OTP email. Check your RESEND_API_KEY in environment variables.",
+          message: "Failed to send OTP email. Check your EMAIL_USER/EMAIL_PASS in environment variables.",
         });
       }
     }
@@ -153,7 +139,7 @@ export const requestLanguageOTP = async (req, res) => {
         } catch (emailErr) {
           console.error("Fallback email error:", emailErr.message);
           return res.status(500).json({
-            message: "Failed to send OTP. Check RESEND_API_KEY in environment variables.",
+            message: "Failed to send OTP. Check EMAIL_USER/EMAIL_PASS in environment variables.",
           });
         }
       }

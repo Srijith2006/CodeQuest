@@ -2,11 +2,7 @@ import mongoose from "mongoose";
 import user from "../models/auth.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { Resend } from "resend";
-
-function getResend() {
-  return new Resend(process.env.RESEND_API_KEY);
-}
+import { sendEmail } from "../utils/sendEmail.js";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -35,9 +31,8 @@ function parseUserAgent(ua = "") {
 }
 
 async function sendOTPEmail(toEmail, otp) {
-  const resend = getResend();
-  const { error } = await resend.emails.send({
-    from: "Code-Quest Security <onboarding@resend.dev>",
+  // FIX: now uses Gmail SMTP — works for any recipient, not just your own address
+  await sendEmail({
     to: toEmail,
     subject: "Login OTP – Code-Quest",
     html: `
@@ -52,7 +47,6 @@ async function sendOTPEmail(toEmail, otp) {
       </div>
     `,
   });
-  if (error) throw new Error(error.message || "Resend failed to send OTP email");
 }
 
 function generateOTP() {

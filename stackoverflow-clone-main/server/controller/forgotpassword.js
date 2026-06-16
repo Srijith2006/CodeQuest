@@ -1,11 +1,6 @@
 import user from "../models/auth.js";
 import bcrypt from "bcryptjs";
-import { Resend } from "resend";
-
-// ── Lazy getter so Resend is created AFTER dotenv has loaded env vars ────────
-function getResend() {
-  return new Resend(process.env.RESEND_API_KEY);
-}
+import { sendEmail } from "../utils/sendEmail.js";
 
 // ── Generate a random password using ONLY uppercase + lowercase letters ──────
 // Spec requirement: "must contain only uppercase and lowercase letters,
@@ -40,15 +35,10 @@ function usedToday(dateField) {
   );
 }
 
-// ── Email the new password directly to the user (via Resend HTTPS API) ───────
+// ── Email the new password directly to the user (via Gmail SMTP) ─────────────
 async function sendPasswordEmail(toEmail, userName, newPassword) {
-  const resend = getResend();
-
-  const { error } = await resend.emails.send({
-    // Resend's default test sender — works without verifying a domain.
-    // Once you verify your own domain in Resend, replace this with
-    // something like "Code-Quest <security@yourdomain.com>".
-    from: "Code-Quest Security <onboarding@resend.dev>",
+  // FIX: now uses Gmail SMTP — works for ANY valid recipient, not just your own email
+  await sendEmail({
     to: toEmail,
     subject: "Your New Password – Code-Quest",
     html: `
@@ -86,10 +76,6 @@ async function sendPasswordEmail(toEmail, userName, newPassword) {
       </div>
     `,
   });
-
-  if (error) {
-    throw new Error(error.message || "Resend failed to send email");
-  }
 }
 
 // ── POST /forgotpassword/reset ─────────────────────────────────────────────
@@ -114,6 +100,8 @@ export const forgotPassword = async (req, res) => {
     }
 
     // ── Once-per-day limit ──────────────────────────────────────────────────
+    // NOTE: this is intentional rate-limiting from your spec, not a bug.
+    // If a SECOND request is made the same day, this correctly returns 429.
     if (usedToday(foundUser.forgotPasswordUsedAt)) {
       return res.status(429).json({
         message: "You can use this option only one time per day.",
