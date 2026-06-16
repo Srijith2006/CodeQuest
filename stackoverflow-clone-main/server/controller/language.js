@@ -58,21 +58,27 @@ async function sendSMSOTP(toPhone, otp) {
 
   const { default: axios } = await import("axios");
 
-  // Using the fallback 'v3' route which acts as a direct transactional message channel
+  // route:"otp" is Fast2SMS's purpose-built OTP route — pre-approved by TRAI,
+  // no DLT template registration required, no sender_id needed.
+  // It sends a standard template like "Your OTP is XXXXXX" using variables_values.
+  // The old route:"v3" with a custom message required DLT approval → caused 400 errors.
   const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
     params: {
       authorization: apiKey,
-      sender_id: "TXTIND", 
-      message: `Your Code-Quest verification code is: ${otp}. Valid for 10 minutes.`,
-      route: "v3",
-      numbers: phone
-    }
+      variables_values: otp,
+      route: "otp",
+      numbers: phone,
+    },
   });
 
   console.log("Fast2SMS Debug Log:", response.data);
 
   if (!response.data || response.data.return === false) {
-    throw new Error(response.data?.message || "Fast2SMS rejected payload parameters");
+    throw new Error(
+      Array.isArray(response.data?.message)
+        ? response.data.message.join(", ")
+        : response.data?.message || "Fast2SMS rejected the request"
+    );
   }
 }
 
