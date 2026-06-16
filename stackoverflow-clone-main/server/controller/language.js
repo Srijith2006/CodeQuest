@@ -43,37 +43,38 @@ async function sendEmailOTP(toEmail, otp, language, userName) {
   });
 }
 
+// ── SMS via Fast2SMS (Robust GET Request Structure) ─────────────────────────
 async function sendSMSOTP(toPhone, otp) {
   const apiKey = process.env.FAST2SMS_API_KEY;
   if (!apiKey) {
     throw new Error("FAST2SMS_NOT_CONFIGURED");
   }
 
-  // 1. Strip country code if present — Fast2SMS strictly requires a 10-digit number
+  // Strip country code if present — Fast2SMS requires a clean 10-digit number
   const phone = toPhone.replace(/^\+91/, "").replace(/\D/g, "").slice(-10);
 
-  // Validate we actually have a 10-digit number left before calling the API
+  // Quick sanity check on formatting
   if (phone.length !== 10) {
-    throw new Error("Invalid Indian phone number format. Must be 10 digits.");
+    throw new Error("Invalid Indian mobile format. Must be exactly 10 digits.");
   }
 
   const { default: axios } = await import("axios");
 
-  // 2. Use Fast2SMS recommended POST method with properly formatted headers & body
-  const response = await axios.post("https://www.fast2sms.com/dev/bulkV2", {
-    route: "otp",
-    variables_values: String(otp), // Explicitly ensure OTP is a string
-    numbers: phone,
-  }, {
-    headers: {
-      "authorization": apiKey,
-      "Content-Type": "application/json"
+  // Hit the Fast2SMS API using structured URL search params
+  const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
+    params: {
+      authorization: apiKey,
+      variables_values: String(otp),
+      route: "otp",
+      numbers: phone
     }
   });
 
-  // Fast2SMS returns data.return as true/false indicating success
+  // Log response inside Render terminal just to verify status
+  console.log("Fast2SMS Response Data:", response.data);
+
   if (!response.data || response.data.return === false) {
-    throw new Error(response.data?.message || "Fast2SMS rejected the payload request");
+    throw new Error(response.data?.message || "Fast2SMS rejected payload parameters");
   }
 }
 
