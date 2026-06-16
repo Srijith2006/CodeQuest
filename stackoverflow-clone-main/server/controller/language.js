@@ -43,28 +43,37 @@ async function sendEmailOTP(toEmail, otp, language, userName) {
   });
 }
 
-// ── SMS via Fast2SMS (with Indian phone cleaning) ─────────────────────────
 async function sendSMSOTP(toPhone, otp) {
   const apiKey = process.env.FAST2SMS_API_KEY;
   if (!apiKey) {
     throw new Error("FAST2SMS_NOT_CONFIGURED");
   }
 
-  // Strip country code if present — Fast2SMS needs 10-digit Indian numbers
+  // 1. Strip country code if present — Fast2SMS strictly requires a 10-digit number
   const phone = toPhone.replace(/^\+91/, "").replace(/\D/g, "").slice(-10);
 
+  // Validate we actually have a 10-digit number left before calling the API
+  if (phone.length !== 10) {
+    throw new Error("Invalid Indian phone number format. Must be 10 digits.");
+  }
+
   const { default: axios } = await import("axios");
-  const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
-    params: {
-      authorization: apiKey,
-      variables_values: otp,
-      route: "otp",
-      numbers: phone,
-    },
+
+  // 2. Use Fast2SMS recommended POST method with properly formatted headers & body
+  const response = await axios.post("https://www.fast2sms.com/dev/bulkV2", {
+    route: "otp",
+    variables_values: String(otp), // Explicitly ensure OTP is a string
+    numbers: phone,
+  }, {
+    headers: {
+      "authorization": apiKey,
+      "Content-Type": "application/json"
+    }
   });
 
-  if (!response.data.return) {
-    throw new Error(response.data.message || "Fast2SMS failed to send OTP");
+  // Fast2SMS returns data.return as true/false indicating success
+  if (!response.data || response.data.return === false) {
+    throw new Error(response.data?.message || "Fast2SMS rejected the payload request");
   }
 }
 
