@@ -59,22 +59,20 @@ async function sendSMSOTP(toPhone, otp) {
 
   let responseData;
   try {
-    // Uses official system DLT Template for OTPs to bypass website verification blocks
     const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
       params: {
         authorization: apiKey,
-        route: "dlt",                       // Routes via official DLT pipelines
-        sender_id: "FSTSMS",               // Pre-approved Fast2SMS standard header
-        message: "167571",                 // Standard free system template ID for OTPs
-        variables_values: String(otp),     // Dynamic numeric variable injection
+        route: "dlt",                       
+        sender_id: "DLTFST",               // FIX: Changed from FSTSMS to DLTFST
+        message: "167571",                 
+        variables_values: String(otp),     
         numbers: phone,
       },
-      validateStatus: () => true,          // Prevents axios from throwing on 4xx/5xx responses
+      validateStatus: () => true,          
     });
 
     responseData = response.data;
 
-    // Log tracking structures directly to Render environment terminal
     console.log("Fast2SMS response status:", response.status);
     console.log("Fast2SMS response body:", JSON.stringify(responseData));
 
