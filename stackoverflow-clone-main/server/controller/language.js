@@ -9,7 +9,6 @@ function generateOTP() {
 
 // ── Send OTP via Gmail SMTP ────────────────────────────────────────────────
 async function sendEmailOTP(toEmail, otp, language, userName) {
-  // FIX: now uses Gmail SMTP — works for any recipient, not just your own address
   await sendEmail({
     to: toEmail,
     subject: "Language Change OTP - Code-Quest",
@@ -43,48 +42,62 @@ async function sendEmailOTP(toEmail, otp, language, userName) {
   });
 }
 
+// ── Send OTP via Fast2SMS ──────────────────────────────────────────────────
 async function sendSMSOTP(toPhone, otp) {
   const apiKey = process.env.FAST2SMS_API_KEY;
   if (!apiKey) {
     throw new Error("FAST2SMS_NOT_CONFIGURED");
   }
 
-  // Strip country code if present — Fast2SMS requires a clean 10-digit number
+  // Strip country code — Fast2SMS needs a clean 10-digit Indian number
   const phone = toPhone.replace(/^\+91/, "").replace(/\D/g, "").slice(-10);
-
   if (phone.length !== 10) {
-    throw new Error("Invalid Indian mobile format. Must be exactly 10 digits.");
+    throw new Error("Invalid Indian mobile number. Must be exactly 10 digits.");
   }
 
   const { default: axios } = await import("axios");
 
-  // route:"otp" is Fast2SMS's purpose-built OTP route — pre-approved by TRAI,
-  // no DLT template registration required, no sender_id needed.
-  // It sends a standard template like "Your OTP is XXXXXX" using variables_values.
-  // The old route:"v3" with a custom message required DLT approval → caused 400 errors.
-  const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
-    params: {
-      authorization: apiKey,
-      variables_values: otp,
-      route: "otp",
-      numbers: phone,
-    },
-  });
+  let responseData;
+  try {
+    // KEY FIX: validateStatus: () => true tells axios to NEVER throw on any
+    // HTTP status code. Without this, axios throws on 4xx/5xx and swallows
+    // the actual Fast2SMS error body — making it impossible to log what went wrong.
+    const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
+      params: {
+        authorization: apiKey,
+        variables_values: otp,
+        route: "otp",
+        numbers: phone,
+      },
+      validateStatus: () => true, // always resolve, never throw on HTTP errors
+    });
 
-  console.log("Fast2SMS Debug Log:", response.data);
+    responseData = response.data;
 
-  if (!response.data || response.data.return === false) {
-    throw new Error(
-      Array.isArray(response.data?.message)
-        ? response.data.message.join(", ")
-        : response.data?.message || "Fast2SMS rejected the request"
-    );
+    // Log the FULL response so Render logs show exactly what Fast2SMS returns
+    console.log("Fast2SMS response status:", response.status);
+    console.log("Fast2SMS response body:", JSON.stringify(responseData));
+
+    if (!responseData || responseData.return === false) {
+      const reason = Array.isArray(responseData?.message)
+        ? responseData.message.join(", ")
+        : responseData?.message || `HTTP ${response.status} from Fast2SMS`;
+      throw new Error(`Fast2SMS error: ${reason}`);
+    }
+  } catch (err) {
+    // Network-level errors (DNS failure, timeout, etc.)
+    if (!responseData) {
+      console.error("Fast2SMS network error:", err.message);
+      throw new Error("Could not reach Fast2SMS. Check network/API URL.");
+    }
+    // Re-throw errors we constructed above
+    throw err;
   }
 }
 
 // ── POST /language/request-otp  (auth required) ──────────────────────────────
 // French  → OTP sent to registered EMAIL (via Gmail SMTP)
-// Others  → OTP sent via SMS (Fast2SMS). No email fallback if unconfigured.
+// Others  → OTP sent via SMS (Fast2SMS)
 export const requestLanguageOTP = async (req, res) => {
   const { language } = req.body;
   const userId = req.userid;
@@ -119,7 +132,7 @@ export const requestLanguageOTP = async (req, res) => {
       } catch (err) {
         console.error("French email OTP error:", err.message);
         return res.status(500).json({
-          message: "Failed to send OTP email. Check your EMAIL_USER/EMAIL_PASS in environment variables.",
+          message: "Failed to send OTP email. Check EMAIL_USER/EMAIL_PASS environment variables.",
         });
       }
     }
@@ -138,12 +151,12 @@ export const requestLanguageOTP = async (req, res) => {
         method: "mobile",
       });
     } catch (smsErr) {
-      // Hard error if Fast2SMS is not configured
       if (smsErr.message === "FAST2SMS_NOT_CONFIGURED") {
         return res.status(500).json({
           message: "SMS service not configured. Contact the administrator.",
         });
       }
+      // smsErr.message now contains the real Fast2SMS rejection reason
       console.error("SMS OTP error:", smsErr.message);
       return res.status(500).json({
         message: "Failed to send SMS OTP: " + smsErr.message,
