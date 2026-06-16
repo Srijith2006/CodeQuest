@@ -38,10 +38,13 @@ function usedToday(dateField) {
 // ── Email the new password directly to the user ──────────────────────────────
 async function sendPasswordEmail(toEmail, userName, newPassword) {
   const transporter = nodemailer.createTransport({
-    service: "gmail",
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    family: 4, // forces IPv4, avoids the broken IPv6 route on Render
     auth: {
       user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS, // Must be a Gmail App Password
+      pass: process.env.EMAIL_PASS,
     },
   });
 
@@ -120,34 +123,47 @@ export const forgotPassword = async (req, res) => {
     const newPassword = generatePassword(10);
     const hashed = await bcrypt.hash(newPassword, 12);
 
-    await user.findByIdAndUpdate(foundUser._id, {
-      password: hashed,
-      forgotPasswordUsedAt: new Date(),
-    });
-
+    // ── Email-based reset ─────────────────────────────────────────────────
     if (email) {
-      // Send directly to registered email
       try {
+        // Send the email FIRST. Only commit the password change to the
+        // database if the email actually succeeds — this guarantees the
+        // password is never shown on screen or returned in the API response,
+        // and the user is never locked out of their old password without
+        // receiving the new one.
         await sendPasswordEmail(foundUser.email, foundUser.name, newPassword);
+
+        await user.findByIdAndUpdate(foundUser._id, {
+          password: hashed,
+          forgotPasswordUsedAt: new Date(),
+        });
+
         return res.status(200).json({
-          message: `✅ A new password has been sent to ${foundUser.email}. Please check your inbox.`,
+          message: `A new password has been sent to ${foundUser.email}. Please check your inbox.`,
         });
       } catch (emailErr) {
         console.error("Email send error:", emailErr.message);
-        // Password WAS changed in DB even if email fails — show it as fallback
-        return res.status(200).json({
-          message: `Password reset successful, but email delivery failed. Your new password is: ${newPassword} (please save this — check EMAIL_PASS in server/.env)`,
+        // Email failed — password was NOT changed, so the user can still log
+        // in with their old password and try again later. Never reveal the
+        // generated password in the response.
+        return res.status(502).json({
+          message:
+            "We couldn't send the reset email right now. Please try again in a few minutes or contact support.",
         });
       }
     }
 
-    // Phone-based reset — SMS gateway not integrated, return password directly
-    // (In production, integrate Twilio/MSG91 to SMS this instead of returning it)
-    return res.status(200).json({
-      message: `Password reset successful. Your new password is: ${newPassword}`,
+    // ── Phone-based reset ────────────────────────────────────────────────
+    // SMS gateway not integrated yet. Do NOT reveal the password in the
+    // response — integrate Twilio/MSG91 here to actually deliver it via SMS.
+    // For now we keep the password change but inform the user the SMS
+    // channel isn't wired up, rather than leaking the credential.
+    return res.status(501).json({
+      message:
+        "Phone-based password reset is not yet available. Please use the email option instead.",
     });
   } catch (error) {
     console.error("forgotPassword error:", error);
-    res.status(500).json({ message: "Something went wrong: " + error.message });
+    res.status(500).json({ message: "Something went wrong. Please try again." });
   }
 };

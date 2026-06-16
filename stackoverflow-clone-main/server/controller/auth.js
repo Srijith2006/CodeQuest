@@ -32,7 +32,10 @@ function parseUserAgent(ua = "") {
 
 async function sendOTPEmail(toEmail, otp) {
   const transporter = nodemailer.createTransport({
-    service: "gmail",
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    family: 4, // forces IPv4, avoids the broken IPv6 route on Render
     auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
   });
   await transporter.sendMail({
