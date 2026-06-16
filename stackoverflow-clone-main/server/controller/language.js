@@ -43,7 +43,6 @@ async function sendEmailOTP(toEmail, otp, language, userName) {
   });
 }
 
-// ── SMS via Fast2SMS (Robust GET Request Structure) ─────────────────────────
 async function sendSMSOTP(toPhone, otp) {
   const apiKey = process.env.FAST2SMS_API_KEY;
   if (!apiKey) {
@@ -53,25 +52,24 @@ async function sendSMSOTP(toPhone, otp) {
   // Strip country code if present — Fast2SMS requires a clean 10-digit number
   const phone = toPhone.replace(/^\+91/, "").replace(/\D/g, "").slice(-10);
 
-  // Quick sanity check on formatting
   if (phone.length !== 10) {
     throw new Error("Invalid Indian mobile format. Must be exactly 10 digits.");
   }
 
   const { default: axios } = await import("axios");
 
-  // Hit the Fast2SMS API using structured URL search params
+  // Using the fallback 'v3' route which acts as a direct transactional message channel
   const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
     params: {
       authorization: apiKey,
-      variables_values: String(otp),
-      route: "otp",
+      sender_id: "TXTIND", 
+      message: `Your Code-Quest verification code is: ${otp}. Valid for 10 minutes.`,
+      route: "v3",
       numbers: phone
     }
   });
 
-  // Log response inside Render terminal just to verify status
-  console.log("Fast2SMS Response Data:", response.data);
+  console.log("Fast2SMS Debug Log:", response.data);
 
   if (!response.data || response.data.return === false) {
     throw new Error(response.data?.message || "Fast2SMS rejected payload parameters");
