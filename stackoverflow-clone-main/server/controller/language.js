@@ -127,4 +127,218 @@ export const getCurrentLanguage = async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: "Something went wrong" });
   }
+};import { Resend } from "resend";
+import user from "../models/auth.js";
+
+const SUPPORTED_LANGUAGES = ["en", "es", "hi", "pt", "zh", "fr"];
+
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+function getResend() {
+  return new Resend(process.env.RESEND_API_KEY);
+}
+
+// ── Send OTP via Resend email ─────────────────────────────────────────────────
+async function sendEmailOTP(toEmail, otp, language, userName) {
+  const resend = getResend();
+
+  const { error } = await resend.emails.send({
+    from: "Code-Quest <onboarding@resend.dev>",
+    to: toEmail,
+    subject: "Language Change OTP - Code-Quest",
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;
+                  border:1px solid #e0e0e0;border-radius:12px;overflow:hidden;">
+        <div style="background:linear-gradient(135deg,#1a73e8,#0d47a1);
+                    color:#fff;padding:24px;text-align:center;">
+          <h2 style="margin:0;">Language Change Verification</h2>
+        </div>
+        <div style="padding:24px;">
+          <p>Hi <strong>${userName || "there"}</strong>,</p>
+          <p>You requested to switch the platform language to
+             <strong>${language.toUpperCase()}</strong>.</p>
+          <p>Your OTP is:</p>
+          <div style="background:#f4f4f4;padding:20px;border-radius:8px;
+                      font-size:32px;font-weight:bold;text-align:center;
+                      letter-spacing:8px;color:#1a73e8;">
+            ${otp}
+          </div>
+          <p style="margin-top:16px;color:#e53935;font-size:13px;">
+            This OTP expires in 10 minutes.
+          </p>
+          <p style="color:#777;font-size:13px;">
+            If you did not request this, please ignore this email.
+          </p>
+          <p style="color:#999;font-size:12px;">Code-Quest Team</p>
+        </div>
+      </div>
+    `,
+  });
+
+  if (error) throw new Error(error.message || "Resend failed to send OTP email");
+}
+
+// ── SMS via Twilio (only if configured, with graceful fallback) ───────────────
+async function sendSMSOTP(toPhone, otp) {
+  const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER } = process.env;
+
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+    throw new Error("TWILIO_NOT_CONFIGURED");
+  }
+
+  let twilioModule;
+  try {
+    twilioModule = await import("twilio");
+  } catch {
+    // Package not installed - treat same as not configured
+    throw new Error("TWILIO_NOT_CONFIGURED");
+  }
+
+  const client = twilioModule.default(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  await client.messages.create({
+    body: `Your Code-Quest language change OTP is: ${otp}. Expires in 10 minutes.`,
+    from: TWILIO_PHONE_NUMBER,
+    to: toPhone,
+  });
+}
+
+// ── POST /language/request-otp  (auth required) ──────────────────────────────
+// French  → OTP sent to registered EMAIL (via Resend)
+// Others  → OTP sent via SMS (Twilio). Falls back to email if Twilio not set up.
+export const requestLanguageOTP = async (req, res) => {
+  const { language } = req.body;
+  const userId = req.userid;
+
+  if (!SUPPORTED_LANGUAGES.includes(language)) {
+    return res.status(400).json({ message: "Unsupported language" });
+  }
+
+  try {
+    const foundUser = await user.findById(userId);
+    if (!foundUser) return res.status(404).json({ message: "User not found" });
+
+    const otp = generateOTP();
+    const expiry = new Date(Date.now() + 10 * 60 * 1000); // 10 min
+
+    await user.findByIdAndUpdate(userId, {
+      languageOtpCode: otp,
+      languageOtpExpiry: expiry,
+    });
+
+    // ── FRENCH: send OTP to email ─────────────────────────────────────────
+    if (language === "fr") {
+      if (!foundUser.email) {
+        return res.status(400).json({ message: "No email on file for this account" });
+      }
+      try {
+        await sendEmailOTP(foundUser.email, otp, language, foundUser.name);
+        return res.status(200).json({
+          message: `OTP sent to your registered email (${maskEmail(foundUser.email)}).`,
+          method: "email",
+        });
+      } catch (err) {
+        console.error("French email OTP error:", err.message);
+        return res.status(500).json({
+          message: "Failed to send OTP email. Check your RESEND_API_KEY in environment variables.",
+        });
+      }
+    }
+
+    // ── OTHER LANGUAGES: send OTP via SMS ────────────────────────────────
+    if (!foundUser.phone) {
+      return res.status(400).json({
+        message: "No phone number on file. Please add your phone number to your profile first.",
+      });
+    }
+
+    try {
+      await sendSMSOTP(foundUser.phone, otp);
+      return res.status(200).json({
+        message: `OTP sent via SMS to (${maskPhone(foundUser.phone)}).`,
+        method: "mobile",
+      });
+    } catch (smsErr) {
+      // If Twilio not configured, fall back to email silently
+      if (smsErr.message === "TWILIO_NOT_CONFIGURED") {
+        if (!foundUser.email) {
+          return res.status(500).json({
+            message: "SMS not configured and no email on file. Cannot send OTP.",
+          });
+        }
+        try {
+          await sendEmailOTP(foundUser.email, otp, language, foundUser.name);
+          return res.status(200).json({
+            message: `OTP sent to your email (${maskEmail(foundUser.email)}) — SMS not configured.`,
+            method: "mobile-fallback-email",
+          });
+        } catch (emailErr) {
+          console.error("Fallback email error:", emailErr.message);
+          return res.status(500).json({
+            message: "Failed to send OTP. Check RESEND_API_KEY in environment variables.",
+          });
+        }
+      }
+      console.error("SMS OTP error:", smsErr.message);
+      return res.status(500).json({
+        message: "Failed to send SMS OTP: " + smsErr.message,
+      });
+    }
+  } catch (error) {
+    console.error("requestLanguageOTP error:", error);
+    res.status(500).json({ message: "Something went wrong" });
+  }
 };
+
+// ── POST /language/verify-otp  (auth required) ────────────────────────────────
+export const verifyLanguageOTP = async (req, res) => {
+  const { otp, language } = req.body;
+  const userId = req.userid;
+
+  try {
+    const foundUser = await user.findById(userId);
+    if (!foundUser) return res.status(404).json({ message: "User not found" });
+
+    if (
+      foundUser.languageOtpCode !== otp ||
+      !foundUser.languageOtpExpiry ||
+      new Date() > new Date(foundUser.languageOtpExpiry)
+    ) {
+      return res.status(400).json({ message: "Invalid or expired OTP. Please request a new one." });
+    }
+
+    await user.findByIdAndUpdate(userId, {
+      language,
+      languageOtpCode: "",
+      languageOtpExpiry: null,
+    });
+
+    res.status(200).json({ message: "Language updated successfully", language });
+  } catch (error) {
+    console.error("verifyLanguageOTP error:", error);
+    res.status(500).json({ message: "Something went wrong" });
+  }
+};
+
+// ── GET /language/current  (auth required) ────────────────────────────────────
+export const getCurrentLanguage = async (req, res) => {
+  try {
+    const foundUser = await user.findById(req.userid).select("language");
+    res.status(200).json({ language: foundUser?.language || "en" });
+  } catch (error) {
+    res.status(500).json({ message: "Something went wrong" });
+  }
+};
+
+// ── Mask helpers ──────────────────────────────────────────────────────────────
+function maskEmail(email) {
+  const [local, domain] = email.split("@");
+  if (local.length <= 2) return `${local[0]}***@${domain}`;
+  return `${local.slice(0, 2)}***@${domain}`;
+}
+
+function maskPhone(phone) {
+  if (phone.length <= 4) return phone;
+  return `${"*".repeat(phone.length - 4)}${phone.slice(-4)}`;
+}

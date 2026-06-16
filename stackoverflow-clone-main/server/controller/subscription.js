@@ -1,23 +1,23 @@
 import Razorpay from "razorpay";
 import crypto from "crypto";
+import { Resend } from "resend";
 import user from "../models/auth.js";
 import question from "../models/question.js";
-import nodemailer from "nodemailer";
-import dns from "dns";
 
-// Force Node's DNS resolver to prefer IPv4 globally — Render's network has a
-// broken/unreachable IPv6 route to Gmail's SMTP servers.
-dns.setDefaultResultOrder("ipv4first");
+// ── Resend helper ─────────────────────────────────────────────────────────────
+function getResend() {
+  return new Resend(process.env.RESEND_API_KEY);
+}
 
 // ── Plan config ───────────────────────────────────────────────────────────────
 export const PLANS = {
   free:   { label: "Free",   price: 0,      dailyLimit: 1,        currency: "INR" },
-  bronze: { label: "Bronze", price: 10000,  dailyLimit: 5,        currency: "INR" }, // paise
+  bronze: { label: "Bronze", price: 10000,  dailyLimit: 5,        currency: "INR" },
   silver: { label: "Silver", price: 30000,  dailyLimit: 10,       currency: "INR" },
   gold:   { label: "Gold",   price: 100000, dailyLimit: Infinity,  currency: "INR" },
 };
 
-// ── FIX: lazy getter so Razorpay is created AFTER dotenv has loaded env vars ──
+// ── Razorpay lazy getter ──────────────────────────────────────────────────────
 function getRazorpay() {
   return new Razorpay({
     key_id: process.env.RAZORPAY_KEY_ID,
@@ -25,45 +25,38 @@ function getRazorpay() {
   });
 }
 
-// ── Payment window: 10:00 AM – 11:00 AM IST ──────────────────────────────────
+// ── Payment window: 10:00 AM - 11:00 AM IST ──────────────────────────────────
 function isPaymentWindowOpen() {
   const now = new Date();
   const istOffset = 5.5 * 60 * 60 * 1000;
   const ist = new Date(now.getTime() + istOffset);
   const totalMin = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-  return totalMin >= 600 && totalMin < 660; // 10:00–10:59 IST
+  return totalMin >= 600 && totalMin < 660;
 }
 
+// ── Send invoice email via Resend ─────────────────────────────────────────────
 async function sendInvoiceEmail(toEmail, userName, plan, orderId, paymentId) {
-  const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587,
-    secure: false,
-    requireTLS: true,
-    family: 4,
-    connectionTimeout: 10000,
-    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-  });
-
+  const resend = getResend();
   const planInfo = PLANS[plan];
   const amount = (planInfo.price / 100).toFixed(2);
   const date = new Date().toLocaleDateString("en-IN", {
     day: "2-digit", month: "long", year: "numeric",
   });
 
-  await transporter.sendMail({
-    from: `"Code-Quest" <${process.env.EMAIL_USER}>`,
+  const { error } = await resend.emails.send({
+    from: "Code-Quest <onboarding@resend.dev>",
     to: toEmail,
-    subject: `Invoice – ${planInfo.label} Plan Subscription`,
+    subject: `Invoice - ${planInfo.label} Plan Subscription`,
     html: `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;">
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;
+                  border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;">
         <div style="background:#1a73e8;color:#fff;padding:24px;">
           <h2 style="margin:0;">Code-Quest Invoice</h2>
           <p style="margin:4px 0 0;">Subscription Confirmation</p>
         </div>
         <div style="padding:24px;">
           <p>Hi <strong>${userName}</strong>,</p>
-          <p>Thank you for subscribing! Here are your invoice details:</p>
+          <p>Thank you for subscribing to Code-Quest! Here are your invoice details:</p>
           <table style="width:100%;border-collapse:collapse;margin-top:16px;">
             <tr style="background:#f4f4f4;">
               <td style="padding:10px;font-weight:bold;">Plan</td>
@@ -71,7 +64,7 @@ async function sendInvoiceEmail(toEmail, userName, plan, orderId, paymentId) {
             </tr>
             <tr>
               <td style="padding:10px;font-weight:bold;">Amount Paid</td>
-              <td style="padding:10px;">₹${amount}</td>
+              <td style="padding:10px;">Rs.${amount}</td>
             </tr>
             <tr style="background:#f4f4f4;">
               <td style="padding:10px;font-weight:bold;">Daily Question Limit</td>
@@ -90,17 +83,17 @@ async function sendInvoiceEmail(toEmail, userName, plan, orderId, paymentId) {
               <td style="padding:10px;">${date}</td>
             </tr>
           </table>
-          <p style="margin-top:24px;color:#555;">Your subscription is valid for 30 days.</p>
+          <p style="margin-top:24px;color:#555;">Your subscription is active for 30 days from today.</p>
           <p style="color:#999;font-size:12px;">Code-Quest Team</p>
         </div>
       </div>
     `,
   });
+
+  if (error) throw new Error(error.message || "Resend failed to send invoice email");
 }
 
-// ── controllers ───────────────────────────────────────────────────────────────
-
-// POST /subscription/create-order
+// ── POST /subscription/create-order ──────────────────────────────────────────
 export const createOrder = async (req, res) => {
   if (!isPaymentWindowOpen()) {
     return res.status(403).json({
@@ -114,7 +107,7 @@ export const createOrder = async (req, res) => {
   }
 
   try {
-    const razorpay = getRazorpay(); // FIX: create instance here, env vars are loaded by now
+    const razorpay = getRazorpay();
     const order = await razorpay.orders.create({
       amount: PLANS[plan].price,
       currency: "INR",
@@ -122,12 +115,12 @@ export const createOrder = async (req, res) => {
     });
     res.status(200).json({ orderId: order.id, amount: order.amount, currency: order.currency });
   } catch (error) {
-    console.error(error);
+    console.error("Create order error:", error);
     res.status(500).json({ message: "Could not create order" });
   }
 };
 
-// POST /subscription/verify
+// ── POST /subscription/verify ─────────────────────────────────────────────────
 export const verifyPayment = async (req, res) => {
   const { razorpay_order_id, razorpay_payment_id, razorpay_signature, plan } = req.body;
   const userId = req.userid;
@@ -158,22 +151,23 @@ export const verifyPayment = async (req, res) => {
       { new: true }
     );
 
-    await sendInvoiceEmail(
+    // Send invoice - non-blocking (don't fail if email fails)
+    sendInvoiceEmail(
       updatedUser.email,
       updatedUser.name,
       plan,
       razorpay_order_id,
       razorpay_payment_id
-    );
+    ).catch((err) => console.error("Invoice email error:", err.message));
 
     res.status(200).json({ message: "Subscription activated", data: updatedUser });
   } catch (error) {
-    console.error(error);
+    console.error("Verify payment error:", error);
     res.status(500).json({ message: "Something went wrong" });
   }
 };
 
-// GET /subscription/status
+// ── GET /subscription/status ──────────────────────────────────────────────────
 export const getSubscriptionStatus = async (req, res) => {
   const userId = req.userid;
   try {
@@ -194,7 +188,6 @@ export const checkQuestionLimit = async (req, res, next) => {
 
     const plan = foundUser.subscription?.plan || "free";
     const expiry = foundUser.subscription?.expiresAt;
-
     const activePlan =
       plan !== "free" && expiry && new Date(expiry) > new Date() ? plan : "free";
     const limit = PLANS[activePlan].dailyLimit;

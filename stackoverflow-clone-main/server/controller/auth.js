@@ -2,12 +2,11 @@ import mongoose from "mongoose";
 import user from "../models/auth.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
-import dns from "dns";
+import { Resend } from "resend";
 
-// Force Node's DNS resolver to prefer IPv4 globally — Render's network has a
-// broken/unreachable IPv6 route to Gmail's SMTP servers.
-dns.setDefaultResultOrder("ipv4first");
+function getResend() {
+  return new Resend(process.env.RESEND_API_KEY);
+}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -36,17 +35,9 @@ function parseUserAgent(ua = "") {
 }
 
 async function sendOTPEmail(toEmail, otp) {
-  const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587,
-    secure: false,
-    requireTLS: true,
-    family: 4,
-    connectionTimeout: 10000,
-    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-  });
-  await transporter.sendMail({
-    from: `"Code-Quest Security" <${process.env.EMAIL_USER}>`,
+  const resend = getResend();
+  const { error } = await resend.emails.send({
+    from: "Code-Quest Security <onboarding@resend.dev>",
     to: toEmail,
     subject: "Login OTP – Code-Quest",
     html: `
@@ -61,6 +52,7 @@ async function sendOTPEmail(toEmail, otp) {
       </div>
     `,
   });
+  if (error) throw new Error(error.message || "Resend failed to send OTP email");
 }
 
 function generateOTP() {
@@ -106,7 +98,16 @@ export const Login = async (req, res) => {
         languageOtpCode: otp,
         languageOtpExpiry: expiry,
       });
-      await sendOTPEmail(existingUser.email, otp);
+
+      try {
+        await sendOTPEmail(existingUser.email, otp);
+      } catch (emailErr) {
+        console.error("OTP email send error:", emailErr.message);
+        return res.status(502).json({
+          message: "We couldn't send the login OTP right now. Please try again shortly.",
+        });
+      }
+
       return res.status(200).json({
         requiresOTP: true,
         userId: existingUser._id,

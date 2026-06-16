@@ -1,13 +1,11 @@
 import user from "../models/auth.js";
 import bcrypt from "bcryptjs";
-import nodemailer from "nodemailer";
-import dns from "dns";
+import { Resend } from "resend";
 
-// ── Force Node's DNS resolver to prefer IPv4 globally ─────────────────────────
-// Render's network has a broken/unreachable IPv6 route to Gmail's SMTP
-// servers. Passing `family: 4` to the socket options alone isn't enough on
-// some Render instances, so we also force this at the DNS resolution layer.
-dns.setDefaultResultOrder("ipv4first");
+// ── Lazy getter so Resend is created AFTER dotenv has loaded env vars ────────
+function getResend() {
+  return new Resend(process.env.RESEND_API_KEY);
+}
 
 // ── Generate a random password using ONLY uppercase + lowercase letters ──────
 // Spec requirement: "must contain only uppercase and lowercase letters,
@@ -42,25 +40,15 @@ function usedToday(dateField) {
   );
 }
 
-// ── Email the new password directly to the user ──────────────────────────────
+// ── Email the new password directly to the user (via Resend HTTPS API) ───────
 async function sendPasswordEmail(toEmail, userName, newPassword) {
-  const transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587,
-    secure: false,
-    requireTLS: true,
-    family: 4, // forces IPv4 at the socket layer
-    connectionTimeout: 10000,
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-  });
+  const resend = getResend();
 
-  await transporter.verify();
-
-  await transporter.sendMail({
-    from: `"Code-Quest Security" <${process.env.EMAIL_USER}>`,
+  const { error } = await resend.emails.send({
+    // Resend's default test sender — works without verifying a domain.
+    // Once you verify your own domain in Resend, replace this with
+    // something like "Code-Quest <security@yourdomain.com>".
+    from: "Code-Quest Security <onboarding@resend.dev>",
     to: toEmail,
     subject: "Your New Password – Code-Quest",
     html: `
@@ -98,6 +86,10 @@ async function sendPasswordEmail(toEmail, userName, newPassword) {
       </div>
     `,
   });
+
+  if (error) {
+    throw new Error(error.message || "Resend failed to send email");
+  }
 }
 
 // ── POST /forgotpassword/reset ─────────────────────────────────────────────
