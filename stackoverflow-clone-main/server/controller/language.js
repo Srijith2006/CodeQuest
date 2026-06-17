@@ -9,6 +9,7 @@ function generateOTP() {
 
 // ── Send OTP via Gmail SMTP ────────────────────────────────────────────────
 async function sendEmailOTP(toEmail, otp, language, userName) {
+  // FIX: now uses Gmail SMTP — works for any recipient, not just your own address
   await sendEmail({
     to: toEmail,
     subject: "Language Change OTP - Code-Quest",
@@ -42,59 +43,43 @@ async function sendEmailOTP(toEmail, otp, language, userName) {
   });
 }
 
-// ── Send OTP via Fast2SMS ──────────────────────────────────────────────────
-// Returns { delivered: boolean, demoOtp?: string } instead of throwing on the
-// known "account not verified yet" error — that specific failure is treated
-// as an expected, temporary condition (not a bug) until Fast2SMS approves
-// the OTP route for this account.
+// ── Format a raw stored phone number into E.164 for Twilio ───────────────────
+// Twilio requires "+<countrycode><number>" (e.g. +919876543210). Numbers
+// saved during signup are likely raw 10-digit numbers with no country code.
+function toE164(rawPhone) {
+  const digitsOnly = rawPhone.replace(/\D/g, "");
+  if (rawPhone.trim().startsWith("+")) return `+${digitsOnly}`;
+  // Defaults to India (+91) — change this if your users are in a different country
+  return `+91${digitsOnly}`;
+}
+
+// ── SMS via Twilio (only if configured, with graceful fallback) ───────────────
 async function sendSMSOTP(toPhone, otp) {
-  const apiKey = process.env.FAST2SMS_API_KEY;
-  if (!apiKey) {
-    return { delivered: false, reason: "NOT_CONFIGURED" };
+  const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER } = process.env;
+
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+    throw new Error("TWILIO_NOT_CONFIGURED");
   }
 
-  // Strip country code — Fast2SMS needs a clean 10-digit Indian number
-  const phone = toPhone.replace(/^\+91/, "").replace(/\D/g, "").slice(-10);
-  if (phone.length !== 10) {
-    throw new Error("Invalid Indian mobile number. Must be exactly 10 digits.");
+  let twilioModule;
+  try {
+    twilioModule = await import("twilio");
+  } catch {
+    // Package not installed - treat same as not configured
+    throw new Error("TWILIO_NOT_CONFIGURED");
   }
 
-  const { default: axios } = await import("axios");
-
-  const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
-    params: {
-      authorization: apiKey,
-      variables_values: otp,
-      route: "otp",
-      numbers: phone,
-    },
-    validateStatus: () => true, // never throw on HTTP errors — inspect manually
+  const client = twilioModule.default(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  await client.messages.create({
+    body: `Your Code-Quest language change OTP is: ${otp}. Expires in 10 minutes.`,
+    from: TWILIO_PHONE_NUMBER,
+    to: toE164(toPhone),
   });
-
-  const data = response.data;
-  console.log("Fast2SMS response status:", response.status);
-  console.log("Fast2SMS response body:", JSON.stringify(data));
-
-  // ── Known "account pending verification" response from Fast2SMS ─────────
-  // status_code 996 = "Before using OTP Message API, complete website
-  // verification." This is an account setup step on Fast2SMS's side, not a
-  // bug in our code — fall back to demo mode instead of failing the request.
-  if (data?.status_code === 996) {
-    return { delivered: false, reason: "PENDING_VERIFICATION", demoOtp: otp };
-  }
-
-  if (!data || data.return === false) {
-    const msg = Array.isArray(data?.message) ? data.message.join(", ") : data?.message;
-    throw new Error(msg || `Fast2SMS rejected the request (HTTP ${response.status})`);
-  }
-
-  return { delivered: true };
 }
 
 // ── POST /language/request-otp  (auth required) ──────────────────────────────
 // French  → OTP sent to registered EMAIL (via Gmail SMTP)
-// Others  → OTP sent via SMS (Fast2SMS); falls back to demo mode if the
-//           Fast2SMS account hasn't completed OTP-route verification yet.
+// Others  → OTP sent via SMS (Twilio). Falls back to email if Twilio not set up.
 export const requestLanguageOTP = async (req, res) => {
   const { language } = req.body;
   const userId = req.userid;
@@ -129,7 +114,7 @@ export const requestLanguageOTP = async (req, res) => {
       } catch (err) {
         console.error("French email OTP error:", err.message);
         return res.status(500).json({
-          message: "Failed to send OTP email. Check EMAIL_USER/EMAIL_PASS environment variables.",
+          message: "Failed to send OTP email. Check your EMAIL_USER/EMAIL_PASS in environment variables.",
         });
       }
     }
@@ -142,35 +127,32 @@ export const requestLanguageOTP = async (req, res) => {
     }
 
     try {
-      const result = await sendSMSOTP(foundUser.phone, otp);
-
-      if (result.delivered) {
-        return res.status(200).json({
-          message: `OTP sent via SMS to (${maskPhone(foundUser.phone)}).`,
-          method: "mobile",
-        });
-      }
-
-      // ── SMS not actually delivered — demo-mode fallback ──────────────────
-      if (result.reason === "PENDING_VERIFICATION") {
-        return res.status(200).json({
-          message: `SMS delivery is pending Fast2SMS account verification, so here's your OTP for now (demo mode).`,
-          method: "mobile",
-          demoOtp: result.demoOtp, // shown directly in the UI as a temporary stand-in for the real SMS
-          demoMode: true,
-        });
-      }
-
-      if (result.reason === "NOT_CONFIGURED") {
-        return res.status(200).json({
-          message: `SMS service isn't configured yet, so here's your OTP for now (demo mode).`,
-          method: "mobile",
-          demoOtp: otp,
-          demoMode: true,
-        });
-      }
+      await sendSMSOTP(foundUser.phone, otp);
+      return res.status(200).json({
+        message: `OTP sent via SMS to (${maskPhone(foundUser.phone)}).`,
+        method: "mobile",
+      });
     } catch (smsErr) {
-      // A genuine, unexpected SMS failure (bad number, network error, etc.)
+      // If Twilio not configured, fall back to email silently
+      if (smsErr.message === "TWILIO_NOT_CONFIGURED") {
+        if (!foundUser.email) {
+          return res.status(500).json({
+            message: "SMS not configured and no email on file. Cannot send OTP.",
+          });
+        }
+        try {
+          await sendEmailOTP(foundUser.email, otp, language, foundUser.name);
+          return res.status(200).json({
+            message: `OTP sent to your email (${maskEmail(foundUser.email)}) — SMS not configured.`,
+            method: "mobile-fallback-email",
+          });
+        } catch (emailErr) {
+          console.error("Fallback email error:", emailErr.message);
+          return res.status(500).json({
+            message: "Failed to send OTP. Check EMAIL_USER/EMAIL_PASS in environment variables.",
+          });
+        }
+      }
       console.error("SMS OTP error:", smsErr.message);
       return res.status(500).json({
         message: "Failed to send SMS OTP: " + smsErr.message,
