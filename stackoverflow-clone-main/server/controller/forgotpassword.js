@@ -2,6 +2,15 @@ import user from "../models/auth.js";
 import bcrypt from "bcryptjs";
 import { sendEmail } from "../utils/sendEmail.js";
 
+// ── Format a raw stored phone number into E.164 for Twilio ───────────────────
+// Twilio requires "+<countrycode><number>" (e.g. +919876543210).
+function toE164(rawPhone) {
+  const digitsOnly = rawPhone.replace(/\D/g, "");
+  if (rawPhone.trim().startsWith("+")) return `+${digitsOnly}`;
+  // Defaults to India (+91) — change this if your users are in a different country
+  return `+91${digitsOnly}`;
+}
+
 // ── Generate a random password using ONLY uppercase + lowercase letters ──────
 // Spec requirement: "must contain only uppercase and lowercase letters,
 // with no numbers or special characters"
@@ -35,9 +44,8 @@ function usedToday(dateField) {
   );
 }
 
-// ── Email the new password directly to the user (via Gmail SMTP) ─────────────
+// ── Email the new password directly to the user (via Brevo HTTPS API) ────────
 async function sendPasswordEmail(toEmail, userName, newPassword) {
-  // FIX: now uses Gmail SMTP — works for ANY valid recipient, not just your own email
   await sendEmail({
     to: toEmail,
     subject: "Your New Password – Code-Quest",
@@ -78,6 +86,29 @@ async function sendPasswordEmail(toEmail, userName, newPassword) {
   });
 }
 
+// ── Text the new password directly to the user (via Twilio SMS) ──────────────
+async function sendPasswordSMS(toPhone, newPassword) {
+  const { TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER } = process.env;
+
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_PHONE_NUMBER) {
+    throw new Error("TWILIO_NOT_CONFIGURED");
+  }
+
+  let twilioModule;
+  try {
+    twilioModule = await import("twilio");
+  } catch {
+    throw new Error("TWILIO_NOT_CONFIGURED");
+  }
+
+  const client = twilioModule.default(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+  await client.messages.create({
+    body: `Your new Code-Quest password is: ${newPassword}. Please log in and change it immediately for your security.`,
+    from: TWILIO_PHONE_NUMBER,
+    to: toE164(toPhone),
+  });
+}
+
 // ── POST /forgotpassword/reset ─────────────────────────────────────────────
 // body: { email } OR { phone }
 export const forgotPassword = async (req, res) => {
@@ -100,8 +131,6 @@ export const forgotPassword = async (req, res) => {
     }
 
     // ── Once-per-day limit ──────────────────────────────────────────────────
-    // NOTE: this is intentional rate-limiting from your spec, not a bug.
-    // If a SECOND request is made the same day, this correctly returns 429.
     if (usedToday(foundUser.forgotPasswordUsedAt)) {
       return res.status(429).json({
         message: "You can use this option only one time per day.",
@@ -115,11 +144,6 @@ export const forgotPassword = async (req, res) => {
     // ── Email-based reset ─────────────────────────────────────────────────
     if (email) {
       try {
-        // Send the email FIRST. Only commit the password change to the
-        // database if the email actually succeeds — this guarantees the
-        // password is never shown on screen or returned in the API response,
-        // and the user is never locked out of their old password without
-        // receiving the new one.
         await sendPasswordEmail(foundUser.email, foundUser.name, newPassword);
 
         await user.findByIdAndUpdate(foundUser._id, {
@@ -132,9 +156,6 @@ export const forgotPassword = async (req, res) => {
         });
       } catch (emailErr) {
         console.error("Email send error:", emailErr.message);
-        // Email failed — password was NOT changed, so the user can still log
-        // in with their old password and try again later. Never reveal the
-        // generated password in the response.
         return res.status(502).json({
           message:
             "We couldn't send the reset email right now. Please try again in a few minutes or contact support.",
@@ -142,13 +163,27 @@ export const forgotPassword = async (req, res) => {
       }
     }
 
-    // ── Phone-based reset ────────────────────────────────────────────────
-    // SMS gateway not integrated yet. Do NOT reveal the password in the
-    // response — integrate Twilio/MSG91 here to actually deliver it via SMS.
-    return res.status(501).json({
-      message:
-        "Phone-based password reset is not yet available. Please use the email option instead.",
-    });
+    // ── Phone-based reset (via Twilio SMS) ──────────────────────────────────
+    if (phone) {
+      try {
+        await sendPasswordSMS(foundUser.phone, newPassword);
+
+        await user.findByIdAndUpdate(foundUser._id, {
+          password: hashed,
+          forgotPasswordUsedAt: new Date(),
+        });
+
+        return res.status(200).json({
+          message: "A new password has been sent to your registered mobile number.",
+        });
+      } catch (smsErr) {
+        console.error("SMS send error:", smsErr.message);
+        return res.status(502).json({
+          message:
+            "We couldn't send the reset SMS right now. Please try again in a few minutes or contact support.",
+        });
+      }
+    }
   } catch (error) {
     console.error("forgotPassword error:", error);
     res.status(500).json({ message: "Something went wrong. Please try again." });
