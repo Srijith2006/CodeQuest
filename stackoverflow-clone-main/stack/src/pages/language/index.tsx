@@ -5,7 +5,7 @@ import { useTranslation } from "@/context/TranslationContext";
 import { LANGUAGES, LanguageCode } from "@/lib/translations";
 import { useEffect, useState } from "react";
 import { toast } from "react-toastify";
-import { Globe, ShieldCheck, Mail, Phone, CheckCircle2 } from "lucide-react";
+import { Globe, ShieldCheck, Mail, Phone, CheckCircle2, Info } from "lucide-react";
 
 export default function LanguagePage() {
   const { user } = useAuth() as any;
@@ -16,7 +16,13 @@ export default function LanguagePage() {
   const [otp, setOtp] = useState("");
   const [otpMethod, setOtpMethod] = useState<"email" | "mobile">("mobile");
   const [loading, setLoading] = useState(false);
-  const [devOtp, setDevOtp] = useState(""); // dev mode only
+
+  // ── Demo-mode OTP shown when real SMS delivery isn't available yet ───────
+  // (e.g. Fast2SMS account pending DLT/registration verification). The
+  // backend only sends this when delivery genuinely failed for a known,
+  // expected reason — never alongside a successful real send.
+  const [demoOtp, setDemoOtp] = useState("");
+  const [isDemoMode, setIsDemoMode] = useState(false);
 
   // Sync with backend on mount (for logged-in users with a saved preference)
   useEffect(() => {
@@ -49,7 +55,15 @@ export default function LanguagePage() {
       });
       setSelectedLang(langCode);
       setOtpMethod(res.data.method);
-      if (res.data.devOtp) setDevOtp(res.data.devOtp); // dev only
+
+      if (res.data.demoMode && res.data.demoOtp) {
+        setIsDemoMode(true);
+        setDemoOtp(res.data.demoOtp);
+      } else {
+        setIsDemoMode(false);
+        setDemoOtp("");
+      }
+
       setStep("otp");
       toast.info(res.data.message);
     } catch (err: any) {
@@ -78,7 +92,8 @@ export default function LanguagePage() {
         (LANGUAGES.find((l) => l.code === res.data.language)?.label || res.data.language));
       setStep("select");
       setOtp("");
-      setDevOtp("");
+      setDemoOtp("");
+      setIsDemoMode(false);
     } catch (err: any) {
       toast.error(err.response?.data?.message || "Invalid OTP");
     } finally {
@@ -175,9 +190,20 @@ export default function LanguagePage() {
               </p>
             </div>
 
-            {devOtp && (
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-xs text-yellow-800 text-center">
-                🛠 Dev mode OTP: <strong>{devOtp}</strong> (remove in production)
+            {isDemoMode && demoOtp && (
+              <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-xs text-amber-800 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-semibold">
+                  <Info className="w-3.5 h-3.5" />
+                  SMS delivery pending carrier verification
+                </div>
+                <p className="text-amber-700">
+                  Your OTP for this session: <strong className="text-base tracking-widest">{demoOtp}</strong>
+                </p>
+                <p className="text-amber-600">
+                  Real-time SMS delivery requires DLT registration with the telecom
+                  provider (a multi-day regulatory process for Indian SMS gateways).
+                  Once registered, this OTP will be delivered directly to your phone.
+                </p>
               </div>
             )}
 
@@ -198,7 +224,8 @@ export default function LanguagePage() {
                 onClick={() => {
                   setStep("select");
                   setOtp("");
-                  setDevOtp("");
+                  setDemoOtp("");
+                  setIsDemoMode(false);
                 }}
                 className="flex-1 py-2.5 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50"
               >
