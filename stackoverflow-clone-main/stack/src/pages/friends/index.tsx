@@ -172,8 +172,11 @@ export default function FriendsPage() {
                   : "border-transparent text-gray-500 hover:text-gray-700"
               }`}
             >
-              {t === "requests" && requesters.length > 0
-                ? `Requests (${requesters.length})`
+              {/* FIX: "requests" must always render as "Requests" regardless
+                  of count — previously this fell through to "Discover" when
+                  requesters.length was 0, causing a duplicate "Discover" tab */}
+              {t === "requests"
+                ? `Requests${requesters.length > 0 ? ` (${requesters.length})` : ""}`
                 : t === "friends"
                 ? `My Friends (${friendList.length})`
                 : "Discover"}
