@@ -11,6 +11,7 @@ import {
   Video,
   X,
   Send,
+  Trash2,
 } from "lucide-react";
 
 interface Comment {
@@ -62,6 +63,7 @@ export default function SocialSpace() {
   const [postError, setPostError] = useState("");
   const [openComments, setOpenComments] = useState<Record<string, boolean>>({});
   const [commentText, setCommentText] = useState<Record<string, string>>({});
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const fetchPosts = async () => {
@@ -156,6 +158,24 @@ export default function SocialSpace() {
       alert("Post link copied to clipboard!");
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  // ── Delete own post ──────────────────────────────────────────────────────
+  // Backend already enforces ownership (returns 403 if not the post author),
+  // so this is safe even if someone tampers with the button visibility.
+  const handleDelete = async (postId: string) => {
+    if (!confirm("Delete this post? This cannot be undone.")) return;
+    setDeletingId(postId);
+    try {
+      await axiosInstance.delete(`/post/${postId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setPosts((prev) => prev.filter((p) => p._id !== postId));
+    } catch (e: any) {
+      alert(e.response?.data?.message || "Failed to delete post");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -276,140 +296,159 @@ export default function SocialSpace() {
             No posts yet. Be the first!
           </p>
         ) : (
-          posts.map((post) => (
-            <div
-              key={post._id}
-              className="border border-gray-200 rounded-lg bg-white shadow-sm overflow-hidden"
-            >
-              {/* header */}
-              <div className="flex items-center gap-3 px-4 py-3">
-                <Avatar className="w-9 h-9">
-                  <AvatarFallback>
-                    {post.userName?.[0]?.toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <div>
-                  <p className="font-medium text-sm">{post.userName}</p>
-                  <p className="text-xs text-gray-400">
-                    {timeAgo(post.createdAt)}
-                  </p>
-                </div>
-              </div>
-
-              {/* media */}
-              {post.mediaType === "image" ? (
-                <img
-                  src={post.mediaUrl}
-                  alt="post"
-                  className="w-full object-contain max-h-96 bg-gray-50"
-                />
-              ) : (
-                <video
-                  src={post.mediaUrl}
-                  controls
-                  className="w-full max-h-96 bg-black"
-                />
-              )}
-
-              {/* caption */}
-              {post.caption && (
-                <p className="px-4 pt-3 text-sm text-gray-800">
-                  {post.caption}
-                </p>
-              )}
-
-              {/* action bar */}
-              <div className="flex items-center gap-4 px-4 py-3 border-t border-gray-100 text-sm text-gray-600">
-                <button
-                  onClick={() => handleLike(post._id)}
-                  className={`flex items-center gap-1 hover:text-red-500 transition-colors ${
-                    isLoggedIn && post.likes.includes(user._id)
-                      ? "text-red-500"
-                      : ""
-                  }`}
-                >
-                  <Heart
-                    size={16}
-                    fill={
-                      isLoggedIn && post.likes.includes(user._id)
-                        ? "currentColor"
-                        : "none"
-                    }
-                  />
-                  {post.likes.length}
-                </button>
-
-                <button
-                  onClick={() =>
-                    setOpenComments((prev) => ({
-                      ...prev,
-                      [post._id]: !prev[post._id],
-                    }))
-                  }
-                  className="flex items-center gap-1 hover:text-blue-500 transition-colors"
-                >
-                  <MessageCircle size={16} />
-                  {post.comments.length}
-                </button>
-
-                <button
-                  onClick={() => handleShare(post._id)}
-                  className="flex items-center gap-1 hover:text-green-500 transition-colors"
-                >
-                  <Share2 size={16} />
-                  {post.shares}
-                </button>
-              </div>
-
-              {/* comments panel */}
-              {openComments[post._id] && (
-                <div className="px-4 pb-4 space-y-3 border-t border-gray-100">
-                  <div className="max-h-40 overflow-y-auto space-y-2 pt-3">
-                    {post.comments.length === 0 && (
-                      <p className="text-xs text-gray-400">No comments yet.</p>
-                    )}
-                    {post.comments.map((c) => (
-                      <div key={c._id} className="flex gap-2 text-sm">
-                        <Avatar className="w-6 h-6 flex-shrink-0">
-                          <AvatarFallback className="text-xs">
-                            {c.userName?.[0]?.toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <span className="font-medium mr-1">{c.userName}</span>
-                          <span className="text-gray-700">{c.text}</span>
-                        </div>
-                      </div>
-                    ))}
+          posts.map((post) => {
+            const isOwner = isLoggedIn && post.userId === user._id;
+            return (
+              <div
+                key={post._id}
+                className="border border-gray-200 rounded-lg bg-white shadow-sm overflow-hidden"
+              >
+                {/* header */}
+                <div className="flex items-center gap-3 px-4 py-3">
+                  <Avatar className="w-9 h-9">
+                    <AvatarFallback>
+                      {post.userName?.[0]?.toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1">
+                    <p className="font-medium text-sm">{post.userName}</p>
+                    <p className="text-xs text-gray-400">
+                      {timeAgo(post.createdAt)}
+                    </p>
                   </div>
-                  {isLoggedIn && (
-                    <div className="flex gap-2 pt-1">
-                      <input
-                        className="flex-1 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
-                        placeholder="Add a comment…"
-                        value={commentText[post._id] || ""}
-                        onChange={(e) =>
-                          setCommentText((prev) => ({
-                            ...prev,
-                            [post._id]: e.target.value,
-                          }))
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleComment(post._id);
-                        }}
-                      />
-                      <button
-                        onClick={() => handleComment(post._id)}
-                        className="text-blue-600 hover:text-blue-800"
-                      >
-                        <Send size={16} />
-                      </button>
-                    </div>
+
+                  {/* Delete — only visible to the post's own author */}
+                  {isOwner && (
+                    <button
+                      onClick={() => handleDelete(post._id)}
+                      disabled={deletingId === post._id}
+                      title="Delete post"
+                      className="text-gray-400 hover:text-red-500 disabled:opacity-50 transition-colors p-1"
+                    >
+                      {deletingId === post._id ? (
+                        <span className="w-4 h-4 border-2 border-gray-300 border-t-red-500 rounded-full animate-spin inline-block" />
+                      ) : (
+                        <Trash2 size={16} />
+                      )}
+                    </button>
                   )}
                 </div>
-              )}
-            </div>
-          ))
+
+                {/* media */}
+                {post.mediaType === "image" ? (
+                  <img
+                    src={post.mediaUrl}
+                    alt="post"
+                    className="w-full object-contain max-h-96 bg-gray-50"
+                  />
+                ) : (
+                  <video
+                    src={post.mediaUrl}
+                    controls
+                    className="w-full max-h-96 bg-black"
+                  />
+                )}
+
+                {/* caption */}
+                {post.caption && (
+                  <p className="px-4 pt-3 text-sm text-gray-800">
+                    {post.caption}
+                  </p>
+                )}
+
+                {/* action bar */}
+                <div className="flex items-center gap-4 px-4 py-3 border-t border-gray-100 text-sm text-gray-600">
+                  <button
+                    onClick={() => handleLike(post._id)}
+                    className={`flex items-center gap-1 hover:text-red-500 transition-colors ${
+                      isLoggedIn && post.likes.includes(user._id)
+                        ? "text-red-500"
+                        : ""
+                    }`}
+                  >
+                    <Heart
+                      size={16}
+                      fill={
+                        isLoggedIn && post.likes.includes(user._id)
+                          ? "currentColor"
+                          : "none"
+                      }
+                    />
+                    {post.likes.length}
+                  </button>
+
+                  <button
+                    onClick={() =>
+                      setOpenComments((prev) => ({
+                        ...prev,
+                        [post._id]: !prev[post._id],
+                      }))
+                    }
+                    className="flex items-center gap-1 hover:text-blue-500 transition-colors"
+                  >
+                    <MessageCircle size={16} />
+                    {post.comments.length}
+                  </button>
+
+                  <button
+                    onClick={() => handleShare(post._id)}
+                    className="flex items-center gap-1 hover:text-green-500 transition-colors"
+                  >
+                    <Share2 size={16} />
+                    {post.shares}
+                  </button>
+                </div>
+
+                {/* comments panel */}
+                {openComments[post._id] && (
+                  <div className="px-4 pb-4 space-y-3 border-t border-gray-100">
+                    <div className="max-h-40 overflow-y-auto space-y-2 pt-3">
+                      {post.comments.length === 0 && (
+                        <p className="text-xs text-gray-400">No comments yet.</p>
+                      )}
+                      {post.comments.map((c) => (
+                        <div key={c._id} className="flex gap-2 text-sm">
+                          <Avatar className="w-6 h-6 flex-shrink-0">
+                            <AvatarFallback className="text-xs">
+                              {c.userName?.[0]?.toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <span className="font-medium mr-1">{c.userName}</span>
+                            <span className="text-gray-700">{c.text}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {isLoggedIn && (
+                      <div className="flex gap-2 pt-1">
+                        <input
+                          className="flex-1 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-400"
+                          placeholder="Add a comment…"
+                          value={commentText[post._id] || ""}
+                          onChange={(e) =>
+                            setCommentText((prev) => ({
+                              ...prev,
+                              [post._id]: e.target.value,
+                            }))
+                          }
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleComment(post._id);
+                          }}
+                        />
+                        <button
+                          onClick={() => handleComment(post._id)}
+                          className="text-blue-600 hover:text-blue-800"
+                        >
+                          <Send size={16} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })
         )}
       </main>
     </Mainlayout>
