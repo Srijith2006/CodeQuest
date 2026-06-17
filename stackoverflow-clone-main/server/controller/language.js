@@ -43,10 +43,14 @@ async function sendEmailOTP(toEmail, otp, language, userName) {
 }
 
 // ── Send OTP via Fast2SMS ──────────────────────────────────────────────────
+// Returns { delivered: boolean, demoOtp?: string } instead of throwing on the
+// known "account not verified yet" error — that specific failure is treated
+// as an expected, temporary condition (not a bug) until Fast2SMS approves
+// the OTP route for this account.
 async function sendSMSOTP(toPhone, otp) {
   const apiKey = process.env.FAST2SMS_API_KEY;
   if (!apiKey) {
-    throw new Error("FAST2SMS_NOT_CONFIGURED");
+    return { delivered: false, reason: "NOT_CONFIGURED" };
   }
 
   // Strip country code — Fast2SMS needs a clean 10-digit Indian number
@@ -57,47 +61,40 @@ async function sendSMSOTP(toPhone, otp) {
 
   const { default: axios } = await import("axios");
 
-  let responseData;
-  try {
-    // KEY FIX: validateStatus: () => true tells axios to NEVER throw on any
-    // HTTP status code. Without this, axios throws on 4xx/5xx and swallows
-    // the actual Fast2SMS error body — making it impossible to log what went wrong.
-    const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
-      params: {
-        authorization: apiKey,
-        variables_values: otp,
-        route: "otp",
-        numbers: phone,
-      },
-      validateStatus: () => true, // always resolve, never throw on HTTP errors
-    });
+  const response = await axios.get("https://www.fast2sms.com/dev/bulkV2", {
+    params: {
+      authorization: apiKey,
+      variables_values: otp,
+      route: "otp",
+      numbers: phone,
+    },
+    validateStatus: () => true, // never throw on HTTP errors — inspect manually
+  });
 
-    responseData = response.data;
+  const data = response.data;
+  console.log("Fast2SMS response status:", response.status);
+  console.log("Fast2SMS response body:", JSON.stringify(data));
 
-    // Log the FULL response so Render logs show exactly what Fast2SMS returns
-    console.log("Fast2SMS response status:", response.status);
-    console.log("Fast2SMS response body:", JSON.stringify(responseData));
-
-    if (!responseData || responseData.return === false) {
-      const reason = Array.isArray(responseData?.message)
-        ? responseData.message.join(", ")
-        : responseData?.message || `HTTP ${response.status} from Fast2SMS`;
-      throw new Error(`Fast2SMS error: ${reason}`);
-    }
-  } catch (err) {
-    // Network-level errors (DNS failure, timeout, etc.)
-    if (!responseData) {
-      console.error("Fast2SMS network error:", err.message);
-      throw new Error("Could not reach Fast2SMS. Check network/API URL.");
-    }
-    // Re-throw errors we constructed above
-    throw err;
+  // ── Known "account pending verification" response from Fast2SMS ─────────
+  // status_code 996 = "Before using OTP Message API, complete website
+  // verification." This is an account setup step on Fast2SMS's side, not a
+  // bug in our code — fall back to demo mode instead of failing the request.
+  if (data?.status_code === 996) {
+    return { delivered: false, reason: "PENDING_VERIFICATION", demoOtp: otp };
   }
+
+  if (!data || data.return === false) {
+    const msg = Array.isArray(data?.message) ? data.message.join(", ") : data?.message;
+    throw new Error(msg || `Fast2SMS rejected the request (HTTP ${response.status})`);
+  }
+
+  return { delivered: true };
 }
 
 // ── POST /language/request-otp  (auth required) ──────────────────────────────
 // French  → OTP sent to registered EMAIL (via Gmail SMTP)
-// Others  → OTP sent via SMS (Fast2SMS)
+// Others  → OTP sent via SMS (Fast2SMS); falls back to demo mode if the
+//           Fast2SMS account hasn't completed OTP-route verification yet.
 export const requestLanguageOTP = async (req, res) => {
   const { language } = req.body;
   const userId = req.userid;
@@ -145,18 +142,35 @@ export const requestLanguageOTP = async (req, res) => {
     }
 
     try {
-      await sendSMSOTP(foundUser.phone, otp);
-      return res.status(200).json({
-        message: `OTP sent via SMS to (${maskPhone(foundUser.phone)}).`,
-        method: "mobile",
-      });
-    } catch (smsErr) {
-      if (smsErr.message === "FAST2SMS_NOT_CONFIGURED") {
-        return res.status(500).json({
-          message: "SMS service not configured. Contact the administrator.",
+      const result = await sendSMSOTP(foundUser.phone, otp);
+
+      if (result.delivered) {
+        return res.status(200).json({
+          message: `OTP sent via SMS to (${maskPhone(foundUser.phone)}).`,
+          method: "mobile",
         });
       }
-      // smsErr.message now contains the real Fast2SMS rejection reason
+
+      // ── SMS not actually delivered — demo-mode fallback ──────────────────
+      if (result.reason === "PENDING_VERIFICATION") {
+        return res.status(200).json({
+          message: `SMS delivery is pending Fast2SMS account verification, so here's your OTP for now (demo mode).`,
+          method: "mobile",
+          demoOtp: result.demoOtp, // shown directly in the UI as a temporary stand-in for the real SMS
+          demoMode: true,
+        });
+      }
+
+      if (result.reason === "NOT_CONFIGURED") {
+        return res.status(200).json({
+          message: `SMS service isn't configured yet, so here's your OTP for now (demo mode).`,
+          method: "mobile",
+          demoOtp: otp,
+          demoMode: true,
+        });
+      }
+    } catch (smsErr) {
+      // A genuine, unexpected SMS failure (bad number, network error, etc.)
       console.error("SMS OTP error:", smsErr.message);
       return res.status(500).json({
         message: "Failed to send SMS OTP: " + smsErr.message,
