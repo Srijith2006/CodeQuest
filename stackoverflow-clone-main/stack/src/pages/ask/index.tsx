@@ -132,11 +132,19 @@ const AskPage = () => {
     } catch (error: any) {
       console.error(error);
       const msg = error.response?.data?.message || error.response?.data || "";
-      if (typeof msg === "string" && msg.toLowerCase().includes("limit")) {
-        toast.error(msg); // Subscription limit message
-      } else if (error.response?.status === 401) {
+
+      if (error.response?.status === 401) {
         toast.error("Session expired. Please log in again.");
         router.push("/auth");
+      } else if (typeof msg === "string" && msg.trim()) {
+        // FIX: previously this only showed the backend's message if it
+        // literally contained the word "limit". The actual subscription
+        // limit message ("Your Free plan allows only 1 question per day...")
+        // never contains that word, so it always fell through to a generic
+        // "Something went wrong" error instead of the real reason.
+        // Now any message the backend sends (limit reached, validation
+        // error, etc.) is shown directly to the user.
+        toast.error(msg);
       } else {
         toast.error("Something went wrong. Please try again.");
       }
