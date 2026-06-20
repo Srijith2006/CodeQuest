@@ -4,7 +4,16 @@ import question from "../models/question.js";
 
 export const Askquestion = async (req, res) => {
   const { postquestiondata } = req.body;
-  const postques = new question({ ...postquestiondata });
+
+  // FIX: always trust the authenticated user's id from the token (set by
+  // auth middleware) rather than whatever userid the frontend sends. This
+  // also guarantees it matches the userid that checkQuestionLimit used to
+  // calculate the daily quota for this same request.
+  const postques = new question({
+    ...postquestiondata,
+    userid: req.userid,
+  });
+
   try {
     await postques.save();
     res.status(200).json({ data: postques });
